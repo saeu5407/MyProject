@@ -665,7 +665,7 @@ grid_search.best_score_ # 점수
 grid_search.best_estimator_ # 최적 매개변수를 넣은 best_estimator
 results = pd.DataFrame(grid_search.cv_results_)
 display(results[:5])
-</code><pre>
+</code></pre>
 ###### solo 85.9%, alpha 0.001, max_iter=1500000
 
 <pre><code>
