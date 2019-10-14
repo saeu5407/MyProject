@@ -1,0 +1,793 @@
+# KAGGLE BATTLEGROUND RANK PREDICT MODEL 
+
+
+<pre><code>
+import pandas as pd
+import numpy as np
+pd.set_option('display.max_columns', 29)
+%matplotlib qt
+import seaborn as sns
+train = pd.read_csv('pubg_train.csv', encoding='cp949')
+test = pd.read_csv('pubg_test.csv', encoding='cp949')
+train.describe().round()
+list(train.columns)
+</code></pre>
+
+결측값은 하나 보인다.
+
+    			Id				groupId         matchId			
+    2744604		f70c74418bb064  12dfbede33f92b  
+
+모든 값이 0인데 에러 값이라고 판단을 해 제거하였다.
+
+<pre><code>
+train.loc[train.winPlacePerc.isnull(),:]
+train2 = train.loc[train.winPlacePerc.notnull(),:]
+train2.to_csv('bg_train.csv', encoding='cp949')
+</code></pre>
+
+## EDA
+
+컬럼을 간단히 분류해 보면
+
+ID : 'Id', 'groupId', 'matchId', 'matchType',
+
+DAMAGE : 'assists', 'damageDealt', 'DBNOs', 'headshotKills', 'killPlace', 'killPoints', 'kills',
+'killStreaks', 'longestKill', 'roadKills', 'vehicleDestroys', 
+
+HEAL : 'boosts', 'heals', 'revives',
+
+ETC : 'matchDuration', 'maxPlace', 'numGroups', 'teamKills', 'weaponsAcquired', 'rankPoints',  'winPoints', 
+
+RUN : 'rideDistance', 'swimDistance', 'walkDistance',
+
+Y : 'winPlacePerc'
+정도로 분류 할 수 있을 듯 하다
+
+### matchType
+
+먼저 해결해야 할 컬럼은 matchType이다. 
+
+<pre><code>
+set(train2.matchType)
+sns.countplot(train2.matchType)
+train3 = train2.loc[train2.matchType.isin(['squad-fpp','squad','duo-fpp','duo','solo-fpp','solo']),:]
+train3['matchType2'] = train3.matchType.replace(['solo-fpp','duo-fpp','squad-fpp'],['solo','duo','squad'])
+train3['matchType3'] = train3.matchType.replace(['solo-fpp','duo-fpp','squad-fpp'],'fpp').replace(['solo','duo','squad'],'tpp')
+train3.to_csv('bg_train3.csv', encoding='cp949')
+train3 =  pd.read_csv('bg_train3.csv', encoding='cp949')
+</code></pre>
+
+빈도수를 확인해 봤을 때는 
+squad-fpp, duo, solo-fpp, squad, duo-fpp, solo가 가장 많은 빈도를 보이고,
+normal과 crash등은 적은 값을 가지고 있다.
+이런 모르는 값들은 제외하고 사용하기로 했다.
+
+4446965 rows -> 4411698 rows (35267 rows 제거 = 0.007%)
+
+fpp가 더 많은 사용자를 가지고 있으며 squad가 가장 인기 있는 매치 타입으로 나타났다.
+그 아래로 duo > solo로 배그의 사용자들은 팀으로 플레이하는 걸 선호한다는 걸 알 수 있다.
+
+### CORR TEST
+
+Y(winPlacePerc)와의 상관관계를 파악해보았다.
+보통 약한 상관관계라 불리는 +-0.3 근처부터 봤을 때
+
+assists(0.3), boosts(0.6), damageDealt(0.45), DBNOs(0.28), headshotKills(0.28), heals(0.43), killPlace(-0.72), kills(0.43), killStreaks(0.377), longestKill(0.41), revives(0.24), rideDistance(0.34), walkDistance(0.81), weaponsAcquired(0.61) 이 있다.
+또한 이 변수들 간에 상관관계가 보이기 때문에 다중공선성 문제를 생각해 봐야 할 듯 하다.
+
+<pre><code>
+corr = train3.corr(method = 'pearson')
+corr.iloc[-1,:]
+colormap = plt.cm.RdBu
+plt.figure(figsize=(39,39))
+sns.heatmap(corr, linewidths=0.1, vmax=1.0,
+           square=True, cmap=colormap, linecolor='white', annot=True)
+</code></pre>
+
+### DAMAGE
+#### KILLS
+
+상관관계가 존재한다.
+최다 72킬까지 존재했었다. mathchType를 변경하고 나서 최대 33킬로 줄어들었다.
+상위 75% 까지도 1킬이며 99%가 7킬 이내에 속한다. 
+상당히 많은 킬수는 핵플레이어나 버그가 의심된다.
+kills는 matchtype 별로 크게 차이가 없지만 duo -> squad가 조금 더 넓은 범위.
+
+<pre><code>
+train3.kills.describe().round()
+train3.kills.quantile(0.99)
+train3.groupby('matchType')['kills'].describe().round()
+train3.groupby('matchType2')['kills'].describe().round()
+train3.groupby('matchType3')['kills'].describe().round()
+sns.stripplot(x='winPlacePerc', y='kills', data=train3, hue='matchType')
+sns.stripplot(x='winPlacePerc', y='kills', data=train3, hue='matchType2')
+sns.stripplot(x='winPlacePerc', y='kills', data=train3, hue='matchType3')
+</code></pre>
+
+in R
+<pre><code>
+train3 = read.csv('bg_train3.csv')
+library(ggplot2)
+ggplot(data=train3, aes(x=kills,y=winPlacePerc)) + geom_point(aes(color=matchType))
+ggplot(data=train3, aes(x=kills,y=winPlacePerc)) + geom_point(aes(color=matchType2))
+ggplot(data=train3, aes(x=kills,y=winPlacePerc)) + geom_point(aes(color=matchType3))
+</code></pre>
+
+#### damageDealt
+
+평균적으로 126의 데미지를 넣으며 0을 넣은 사람이 상당히 많다보니 메디안은 81이다. 
+최대값은 3796.
+상위 75%까지도 181로 낮은 데미지를 보인다.
+사실상 대부분의 사람들은 데미지를 0만 넣는다.
+상관관계가 보임, 매치타입 간에 평균이 차이가난다. solo의 경우 159인데 반해 squad의 경우 171. 차이가 좀 보이긴 하다. 분포는 비슷함.
+fpp가 tpp보다 조금 더 높은 데미지를 보인다.
+
+<pre><code>
+train3.damageDealt.describe().round()
+train3.groupby('matchType')['damageDealt'].describe().round()
+train3.groupby('matchType2')['damageDealt'].describe().round()
+train3.groupby('matchType3')['damageDealt'].describe().round()
+sns.countplot(train3.damageDealt, hue='matchType', data=train3)
+sns.stripplot(x='winPlacePerc', y='damageDealt', data=train3, hue='matchType')
+sns.stripplot(x='winPlacePerc', y='damageDealt', data=train3, hue='matchType2')
+sns.stripplot(x='winPlacePerc', y='damageDealt', data=train3, hue='matchType3')
+sns.stripplot(x='winPlacePerc', y='damageDealt', data=train3.loc[train3.matchType=='solo',:], hue='matchType')
+sns.stripplot(x='winPlacePerc', y='damageDealt', data=train3.loc[train3.matchType=='duo',:], hue='matchType')
+sns.stripplot(x='winPlacePerc', y='damageDealt', data=train3.loc[train3.matchType=='squad',:], hue='matchType')
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=damageDealt,y=winPlacePerc)) + geom_point(aes(color=matchType))
+ggplot(data=train3, aes(x=damageDealt,y=winPlacePerc)) + geom_point(aes(color=matchType2))
+ggplot(data=train3, aes(x=damageDealt,y=winPlacePerc)) + geom_point(aes(color=matchType3))
+</code></pre>
+
+#### assists 
+
+상관관계가 있음
+듀오 이상에서 어시스트 수가 많아진다 특히 스쿼드가 많다는 걸 알 수 있다.
+대부분은 0어시를 기록한다
+솔로의 경우 4어시까지 존재한다.
+solo < duo < squad 차이가 존재한다 평균은 모두 0이지만 최대값이 4~5, 8~9, 10~12 수준
+fpp와 tpp는 2차이 정도로 낮지만 solo < squad에선 차이가 있다고 볼 수 있을듯
+
+<pre><code>
+train3.assists.describe().round()
+train3.groupby('matchType')['assists'].describe().round()
+train3.groupby('matchType2')['assists'].describe().round()
+train3.groupby('matchType3')['assists'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=assists,y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+#### killPlace
+
+kill 수 대로 랭크를 매긴걸로 음의 상관관계를 보인다(1등이 많이 킬한거이므로)
+kills와 방향만 거꾸로고 비슷하다고 보면 된다.
+사실상 kills와 같은 컬럼, 또한 Damage 분류의 변수들은 다들 상관관계가 있어보인다.
+그룹 간에 차이도 없어보인다.
+
+<pre><code>
+train3.killPlace.describe().round()
+train3.loc[train3.matchType=='solo',:].killPlace.describe().round()
+train3.groupby('matchType')['killPlace'].describe().round()
+train3.groupby('matchType')['killPlace2'].describe().round()
+train3.groupby('matchType')['killPlace3'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=DBNOs, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+#### DBNOs
+
+약한 상관관계
+solo의 경우 모두 0인데 solo는 DBNO(기절)이 없이 바로 사망이기 때문이다
+얘는 assists와 달리 solo, duo,  squad에는 차이가 없어보이는데
+tpp fpp간에 차이가 있어보이지만 지금까지와 마찬가지로 조금 더 넓은 범위 수준이다.
+
+<pre><code>
+train3.DBNOs.describe().round()
+train3.groupby('matchType')['DBNOs'].describe().round()
+train3.groupby('matchType2')['DBNOs'].describe().round()
+train3.groupby('matchType3')['DBNOs'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=DBNOs, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType3))
+</code></pre>
+
+#### killPoints
+
+전혀 상관관계가 보이지 않는다.
+fpp가 tpp보다 높다. solo < duo < squad 로 차이가 있다. 물론 역시 범위가 좀 넓은 느낌으로
+0인 값들이 많은데 1000 이후부터 다시 많아진다 그 사이의 값이 많이 적음
+killPoint는 킬수 기반 레이팅으로 1000점이 기준일 듯 하다. 0점은 아예 안한 레이팅이기 떄문이지 않을까 싶다. 
+
+<pre><code>
+train3.killPoints.describe().round()
+train3.groupby('matchType')['killPoints'].describe().round()
+train3.groupby('matchType2')['killPoints'].describe().round()
+train3.groupby('matchType3')['killPoints'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=killPoints, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+
+#### killStreaks
+
+연속 킬 수다, 상관관계가 보이진 않는다 연속킬수가 5킬 이상은 대부분 tpp이다.
+
+<pre><code>
+train3.killStreaks.describe().round()
+train3.groupby('matchType')['killStreaks'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=killStreaks, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+ggplot(data=train3, aes(x=longestKill, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType3))
+</code></pre>
+
+#### longestKill aa
+
+약한 상관관계가 보인다.
+매치간의 차이는 보이지 않는다.
+아마 먼 거리의 적을 맞출 수 있는 플레이어의 실력이 높다보니 순위도 맞출 수 있는 듯
+
+<pre><code>
+train3.longestKill.describe().round()
+train3.groupby('matchType')['longestKill'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=longestKill, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+#### roadKills
+
+solo의 roadkills max값은 나머지 값들의 2~3배이다. solo는 차만 타고 다니는듯.
+tpp가 로드킬이 더 많다. tpp <-> fpp 차이가 그나마 가장 느껴지는 컬럼
+평균이나 75% 까지 0이다. 상관관계는 보이지 않는다.
+
+<pre><code>
+train3.roadKills.describe().round()
+train3.groupby('matchType')['roadKills'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=roadKills, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+
+#### vehicleDestroys
+
+매치간에 큰 차이는 보이지 않는다. 대부분 75%까지 0의 파괴를 보인다.
+예상외로 약한 상관관계가 보인다. 차를 부실수 있는 에이밍이면 실력이 좋다는 증거인듯
+
+<pre><code>
+train3.vehicleDestroys.describe().round()
+train3.groupby('matchType')['vehicleDestroys'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=vehicleDestroys, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+### HEAL
+#### boosts
+
+상관관계가 있다. 평균은 1개이며 중위수는 0개.
+fpp가 tpp보다 조금 더 먹는다. 큰 차이는 아닌듯
+
+<pre><code>
+train3.boosts.describe().round()
+train3.groupby('matchType')['boosts'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=boosts, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+#### heals
+
+평균은 1개, squad는 2개이다. 상관관계가 보이고 매치간에 차이는 크지않다.
+
+<pre><code>
+train3.heals.describe().round()
+train3.groupby('matchType')['heals'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=heals, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+#### revives
+
+아주 약하거나 거의 없는 상관관계를 보인다.
+부활 횟수로 바로 죽는 솔로는 0, 교전이 일어나면 장기간이라 스쿼드보단 듀오가 revive max값이 조금 더 높지만 상위 75%까지는 0이다.
+
+<pre><code>
+train3.revives.describe().round()
+train3.groupby('matchType')['revives'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=revives, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+### RUN
+#### rideDistance
+
+상관관계가 있다.
+fpp < tpp, 중위수 미만까지 0이다. 즉 반정도는 차를 아예 타지 않는다.
+또한 tpp가 좀 더 많은 거리를 움직인다.
+rideDistance가 0인 사람들을 찾아보았는데 roadKills가 1이상인 185 rows를 찾을 수 있었다.
+ridaDistance를 제외하고는 멀쩡한 데이터로 보이는데 어떻게 할 지 고민해봐야 할듯 하다.
+
+<pre><code>
+train3.rideDistance.describe().round()
+train3.groupby('matchType')['rideDistance'].describe().round()
+train3.loc[train3.rideDistance==0,:].describe().round()
+train3.loc[(train3.rideDistance==0) & (train3.roadKills!=0), :]
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=rideDistance, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+#### swimDistance
+
+75% 이상의 사람들은 수영 거리가 아예 0이다.
+매치간의 차이는 보이지 않았다.
+예상외로 상관관계가 있다 왜지?
+
+<pre><code>
+train3.swimDistance.describe().round()
+train3.groupby('matchType')['swimDistance'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=swimDistance, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+#### walkDistance
+
+평균적으로 1000정도를 걷는다.
+min값이 0이다. 아예 행동을 안했다는 뜻
+min값이 0인데도 assists, boosts등을 사용한 플레이어가 있다.
+97612 rows가 이동이 0인데도 행동을 한 플레이어.(전체 player의 0.02%)
+이것과 앞에 roadKills이 있는 rideDistance값들은 어떻게 할 지 생각해봐야 할 듯 하다.
+상관관계가 있다.
+
+<pre><code>
+train3.walkDistance.describe().round()
+train3.groupby('matchType')['walkDistance'].describe().round()
+train3.loc[train3.walkDistance==0,:].describe().round()
+train3.loc[train3.walkDistance==0,:]
+train3.loc[(train3.walkDistance==0) & (train3.roadKills!=0), :]
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=walkDistance, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+### ETC
+#### matchDuration
+
+매치간의 차이는 없는 듯. 평균적으로 1600 정도에 게임이 끝난다.
+
+<pre><code>
+train3.matchDuration.describe().round()
+train3.groupby('matchType')['matchDuration'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=matchDuration, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+#### maxPlace
+
+시작하기 전까지 참가한 팀의 수로 총 100명이 참가 가능해 solo 100, duo 50, squad 25여야 한다.
+duo중 max값이 51, squad 중 max값이 37인 경우가 있는데, 1인 듀오나 1,2,3인 스쿼드가 가능해서 생기는 일이라고 생각했으나 수를 세 봤을 때  4명보다 많은 스쿼드 수가 발견되었다. 
+solo나 duo역시 생길 수 없는 그룹이 존재했다.
+
+
+squad의 경우 103589 row 가 4를 초과하는 값을 가지고 있다.
+duo의 경우 40802 rows 가 2를 초과하는 값을 가지고 있다.
+solo의 경우 9563 rows 가 1을 초과하는 값을 가지고 있다.
+
+그 값들을 찾아본 결과 각각의 값들을 다 실제 플레이를 했을 법한 데이터들이었다.
+중복 데이터가 없어서 에러로 인해 두 개 이상의 팀이 섞인 것으로 보았다.
+일단은 변경없이 가는걸로 했다.
+
+<pre><code>
+train3.maxPlace.describe().round()
+train3.groupby('matchType')['maxPlace'].describe().round()
+train5 = train3.groupby(['matchId','matchType2','groupId'])['Id'].count().reset_index()
+train6 = train5.loc[(train5.Id > 4) & (train5.matchType2=='squad'),:]
+train7 = train5.loc[(train5.Id > 2) & (train5.matchType2=='duo'),:]
+train8 = train5.loc[(train5.Id > 1) & (train5.matchType2=='solo'),:]
+pd.merge(train6, train3, on=['matchId','matchType2','groupId'], how='inner')
+</code></pre>
+
+#### numGroups
+
+상관관계는 적다. maxPlace와 비슷한 문제가 존재
+참가한 팀 중 몇팀은 나간다는 걸 알 수 있다.
+
+<pre><code>
+train3.numGroups.describe().round()
+train3.groupby('matchType')['numGroups'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=numGroups, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+#### teamKills
+
+max값을 봤을 때 팀킬 최대치만큼만 있기에 문제 없어보임.
+상관관계는 없어보임
+
+<pre><code>
+train3.teamKills.describe().round()
+train3.groupby('matchType')['teamKills'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=teamKills, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+#### weaponsAcquired
+
+max값이 좀 들쑥날쑥하다. 특히 squad-fpp는 236이다 다만 평균 장비 획득은 4수준
+max값은 이상치일 가능성이 존재. 다만 다른 지표에서 뚜렷하게 핵플레이어인거 같은 징후를 발견하기 어렵다.
+상관관계를 보인다.
+
+<pre><code>
+train3.weaponsAcquired.describe().round()
+train3.groupby('matchType')['weaponsAcquired'].describe().round()
+train3.loc[train3.weaponsAcquired >= train3.weaponsAcquired.quantile(0.99), :]
+train3.loc[train3.weaponsAcquired >=  100, :]
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=weaponsAcquired, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+#### rankPoints
+
+-1인 값들이 많고, 상관관계는 뚜렷하지 않다. 물론 -1인 값들을 변경해봐야 정확하게 알 듯하다.
+
+<pre><code>
+train3.rankPoints.describe().round()
+train3.groupby('matchType')['rankPoints'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=rankPoints, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+#### winPoints
+
+승수 기반 랭크로 안한 사람은 0이라 이 값을 변경해야 할 필요가 있음
+상관관계가 느껴짐.
+평균이 상당히 낮은데 0인 값이 많아서 생긴 것으로 보임. 변경 후를 보자.
+
+<pre><code>
+train3.winPoints.describe().round()
+train3.groupby('matchType')['winPoints'].describe().round()
+</code></pre>
+
+in R
+<pre><code>
+ggplot(data=train3, aes(x=winPoints, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+#### winPlacePerc
+
+<pre><code>
+ggplot(data=train3, aes(x=winPlacePerc, y=winPlacePerc)) + geom_point(alpha=0.2, aes(color=matchType))
+</code></pre>
+
+### 현재 문제점 정리
+
+1)
+Rating과 관련된 데이터들은 0인 값들이 많은데 이 값들은 아마 지금까지 플레이하지 않았던 유저이기 때문에 생긴 오류일 가능성이 높다.
+winPoints, killPoints, rankPoints 3개의 컬럼이다.
+rankPoints는 그 값이 -1이다. 하지만 분포를 봤을 때 다른 분포의 0과 같은 양상을 보이므로 이유는 같을 것이라고 판단했다.
+killPoints- winPoints- rankPoints는 서로간의 상관관계가 +-0.98수준으로 셋 중 하나를 써도 될듯, 하지만 Y값과는 0.007이므로 안쓰는게 좋을 듯 하다.
+
+2)
+이상치들이 존재한다. 
+차에 탑승하지 않았으나 roadKills, 움직이지 않았으나 다른 지표는 있는 데이터들이다.
+walkDistance(97612 rows) + rideDistance(185 rows) -> 전체 0.02% 적은 수라 제거하는 방법을 사용했다.
+train3 = train3.loc[-((train3.rideDistance==0) & (train3.roadKills!=0)), :]
+train3 = train3.loc[-(train3.walkDistance==0),:] 
+train3.to_csv('1003bg_train.csv', encoding='cp949', index=False)
+train3 = pd.read_csv('1003bg_train.csv', encoding='cp949')
+
+3)
+kills, weaponsAcquired 등에서 상당히 높은 값을 가진 플레이어들이 존재한다.
+핵 유저일 가능성이 높다. 하지만 상위 1%값을 봤을 때 크게 핵 플레이어인지 찾기 어렵고, 
+핵플레이어로 분류할  기준을 삼기 어렵다는 점이 있다.
+(현재 방안이 없는 문제)
+
+4)
+인원이 5명 이상인 스쿼드나 3명 이상의 듀오 등이 존재한다. 다만 각각의 값들을 봤을 때
+중복된 값이 없어 두 개 이상의 팀이 합쳐지지 않아서 생긴 오류라고 판단했다. 이 결정이 문제일 수도 있다.
+
+5)
+solo, duo, squad, 그리고 fpp, tpp로 총 6가지의 matchType이 있다.
+데이터의 평균 등이 크게 차이나지는 않지만 컬럼별로 분포가 조금은 다른 것을 확인할 수 있었다.
+매치타입을 무시하는 방법과 매치타입별로 나누는 방법도 생각해야 할 듯.
+
+6)
+변수 간에 상관관계가 있다.
+결론적으로 다중공선성에 영향을 덜 받는 방법을 찾아야 하며 핵 플레이어의 이상치를 제대로 잡아내지 못하기에 이상치에도 민감하지 않은 모델을 찾아야 한다
+-> 다중공선성, 이상치를 해결할 만한 모델 선택해야 한다.
+
+### 모델링
+
+다중공선성을 해결하기 위해 Lasso & Tree기반 모델들을 선정했다.
+Points들은 큰 상관관계가 없는데 비해 null값이 많기에 선정하지 않았다.
+아예 상관이 없다고 판단한 변수들도 제거했다.
+
+matchType는 fpp와 tpp간의 차이도 약간 있으나 solo duo squad만큼의 차이를 보이지는 않았다.
+
+방안 1 : matchType 변수를 범주형 변수로 추가하는 방안
+
+방안 2 : 아예 solo, duo, squad 별로 모델을 하나씩 만드는 방안
+을 생각해 보았다.
+
+
+
+#### 1_1 : 범주형으로 추가 matchType
+
+matchType 6개 모두를 범주형으로 비교
+
+<pre><code>
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.linear_model import Lasso
+from sklearn.model_selection import GridSearchCV
+#
+Y = train3['winPlacePerc']
+X = train3.loc[:,['matchType', 'assists', 'boosts',
+       'damageDealt', 'DBNOs', 'headshotKills', 'heals', 'killPlace',
+      'kills', 'killStreaks', 'longestKill', 'revives', 'rideDistance', 'roadKills', 'swimDistance',
+       'vehicleDestroys', 'walkDistance', 'weaponsAcquired']]
+X['matchType'] = X.matchType.replace(['solo','solo-fpp','duo','duo-fpp','squad','squad-fpp'],[0,1,2,3,4,5])
+#
+onehot = OneHotEncoder()
+x = onehot.fit_transform(X['matchType'].values.reshape(-1,1)).toarray()
+onehot_df1 = pd.DataFrame(x, columns = ["matchType"+str(int(i)) for i in range(x.shape[1])])
+X_t = pd.concat([X, onehot_df1], axis=1)
+X_t = X_t.drop('matchType', axis=1)
+#
+lasso = Lasso().fit(X_t, Y)
+lasso.score(X_t, Y)
+pd.DataFrame({'x' : X_t.columns, 'score' : lasso.coef_.round(5)})
+#
+param_grid = {'alpha' : [0.001,0.05,0.01,0.5,0.1,1], 'max_iter' : [10000000, 100000, 1000]}
+grid_search = GridSearchCV( Lasso(), param_grid, cv=5)
+grid_search.fit(X_t, Y)
+grid_search.score(X_t, Y)
+grid_search.best_params_ # 최적 매개변수
+grid_search.best_score_ # 점수
+grid_search.best_estimator_ # 최적 매개변수를 넣은 best_estimator
+results = pd.DataFrame(grid_search.cv_results_)
+display(results[:5])
+</code></pre>
+###### 81.7% score
+
+#### Lasso_1 : 범주형
+
+<pre><code>
+X = train3.loc[:,['matchType2', 'assists', 'boosts',
+       'damageDealt', 'DBNOs', 'headshotKills', 'heals', 'killPlace',
+      'kills', 'killStreaks', 'longestKill', 'revives', 'rideDistance', 'roadKills', 'swimDistance',
+       'vehicleDestroys', 'walkDistance', 'weaponsAcquired']]
+X['matchType2'] = X.matchType2.replace(['solo','duo','squad'],[0,1,2])
+#
+onehot = OneHotEncoder()
+x = onehot.fit_transform(X['matchType2'].values.reshape(-1,1)).toarray()
+onehot_df1 = pd.DataFrame(x, columns = ["matchType"+str(int(i)) for i in range(x.shape[1])])
+X_t = pd.concat([X, onehot_df1], axis=1)
+X_t = X_t.drop('matchType2', axis=1)
+#
+lasso = Lasso().fit(X_t, Y)
+lasso.score(X_t, Y)
+pd.DataFrame({'x' : X_t.columns, 'score' : lasso.coef_.round(5)})
+#
+param_grid = {'alpha' : [0.001,0.05,0.01], 'max_iter' : [5000000, 10000000, 15000000]}
+grid_search = GridSearchCV( Lasso(), param_grid, cv=5)
+grid_search.fit(X_t, Y)
+grid_search.score(X_t, Y)
+grid_search.best_params_ # 최적 매개변수
+grid_search.best_score_ # 점수
+grid_search.best_estimator_ # 최적 매개변수를 넣은 best_estimator
+results = pd.DataFrame(grid_search.cv_results_)
+display(results[:5])
+</code></pre>
+###### 81.6%
+범주형으로는 81%정도가 나온다. 높지는 않은듯.
+매치타입간에는 차이가 나지 않았다.
+
+#### Lasso_2 : 타입별 다른 모델
+
+<pre><code>
+Y_solo = train3.loc[train3.matchType2=='solo' ,'winPlacePerc']
+X_solo = train3.loc[train3.matchType2=='solo',['assists', 'boosts',
+       'damageDealt', 'DBNOs', 'headshotKills', 'heals', 'killPlace',
+      'kills', 'killStreaks', 'longestKill', 'revives', 'rideDistance', 'roadKills', 'swimDistance',
+       'vehicleDestroys', 'walkDistance', 'weaponsAcquired']]
+Y_duo = train3.loc[train3.matchType2=='duo' ,'winPlacePerc']
+X_duo = train3.loc[train3.matchType2=='duo',['assists', 'boosts',
+       'damageDealt', 'DBNOs', 'headshotKills', 'heals', 'killPlace',
+      'kills', 'killStreaks', 'longestKill', 'revives', 'rideDistance', 'roadKills', 'swimDistance',
+       'vehicleDestroys', 'walkDistance', 'weaponsAcquired']]
+Y_squad = train3.loc[train3.matchType2=='squad' ,'winPlacePerc']
+X_squad = train3.loc[train3.matchType2=='squad',['assists', 'boosts',
+       'damageDealt', 'DBNOs', 'headshotKills', 'heals', 'killPlace',
+      'kills', 'killStreaks', 'longestKill', 'revives', 'rideDistance', 'roadKills', 'swimDistance',
+       'vehicleDestroys', 'walkDistance', 'weaponsAcquired']]
+param_grid = {'alpha' : [0.001], 'max_iter' : [1000000, 1500000, 2000000]}
+grid_search = GridSearchCV( Lasso(), param_grid, cv=5)
+grid_search.fit(X_solo, Y_solo)
+grid_search.score(X_solo, Y_solo)
+grid_search.best_params_ # 최적 매개변수
+grid_search.best_score_ # 점수
+grid_search.best_estimator_ # 최적 매개변수를 넣은 best_estimator
+results = pd.DataFrame(grid_search.cv_results_)
+display(results[:5])
+</code><pre>
+###### solo 85.9%, alpha 0.001, max_iter=1500000
+
+<pre><code>
+param_grid = {'alpha' : [0.001,0.05,0.01,0.5,0.1,1], 'max_iter' : [10000]}
+grid_search = GridSearchCV( Lasso(), param_grid, cv=5)
+grid_search.fit(X_duo, Y_duo)
+grid_search.score(X_duo, Y_duo)
+grid_search.best_params_ # 최적 매개변수
+grid_search.best_score_ # 점수
+grid_search.best_estimator_ # 최적 매개변수를 넣은 best_estimator
+results = pd.DataFrame(grid_search.cv_results_)
+display(results[:5])
+</code></pre>
+###### Duo 84.5%, alpha 0.001, max_iter=10000
+
+<pre><code>
+param_grid = {'alpha' : [0.001,0.05,0.01,0.5,0.1,1], 'max_iter' : [10000]}
+grid_search = GridSearchCV( Lasso(), param_grid, cv=5)
+grid_search.fit(X_squad, Y_squad)
+grid_search.score(X_squad, Y_squad)
+grid_search.best_params_ # 최적 매개변수
+grid_search.best_score_ # 점수
+grid_search.best_estimator_ # 최적 매개변수를 넣은 best_estimator
+results = pd.DataFrame(grid_search.cv_results_)
+display(results[:5])
+</code></pre>
+###### Squad 79.4%, alpha 0.001, max_iter=10000
+
+약간 상승한 느낌이다.
+트리기반 모델을 사용해서 분석을 해 보는 방법이 좋을 듯 하다.
+
+#### GB_1 : 범주형
+
+<pre><code>
+gb_t = GradientBoostingRegressor().fit(X_t, Y)
+gb_t.score(X_t, Y)
+pd.DataFrame({'x' : X_t.columns, 'score' : lasso.coef_.round(5)})
+</code></pre>
+###### 89%
+
+#### GB_2 : 타입별 다른 모델
+
+내 컴퓨터 성능의 한계로 그리드서치와 CV을 포기
+
+<pre><code>
+from sklearn.ensemble import GradientBoostingRegressor
+gb_solo = GradientBoostingRegressor().fit(X_solo, Y_solo)
+gb_solo.score(X_solo, Y_solo)
+pd.DataFrame({'x' : X_solo.columns, 'score' : gb_solo.feature_importances_.round(5)})
+</code></pre>
+###### 92.4%
+solo의 변수중요도는 killPlace, walkDistance등이 높았다.
+
+<pre><code>
+gb_duo = GradientBoostingRegressor().fit(X_duo, Y_duo)
+gb_duo.score(X_duo, Y_duo)
+pd.DataFrame({'x' : X_duo.columns, 'score' : gb_duo.feature_importances_.round(5)})
+</code></pre>
+###### 91.0%
+변수중요도에서 solo와 비슷한 수치를 보였다
+
+<pre><code>
+gb_squad = GradientBoostingRegressor().fit(X_squad, Y_squad)
+gb_squad.score(X_squad, Y_squad)
+pd.DataFrame({'x' : X_squad.columns, 'score' : gb_squad.feature_importances_.round(5)})
+</code></pre>
+###### 88.0%
+killPlace, Kills, walkDistance등이 높았다. solo, duo와 살짝 다름
+
+### Test Set Score
+
+train set과 같은 작업을 실시했다.
+1934174 - 1883788 rows 로 제거된 50000여 rows는 0으로 했다.
+
+<pre><code>
+test = pd.read_csv('pubg_test.csv', encoding='cp949')
+pd.set_option('display.max_columns', 29)
+test.describe().round() # 결측치는 안보임
+test2= test.loc[test.matchType.isin(['squad-fpp','squad','duo-fpp','duo','solo-fpp','solo']),:]
+test2['matchType2'] = test2.matchType.replace(['solo-fpp','duo-fpp','squad-fpp'],['solo','duo','squad'])
+test2= test2.loc[-((test2.rideDistance==0) & (test2.roadKills!=0)), :]
+test2= test2.loc[-(test2.walkDistance==0),:] 
+test2.to_csv('bg_test.csv', encoding='cp949', index=False)
+test2= pd.read_csv('bg_test.csv', encoding='cp949')
+X_test_solo = test2.loc[test2.matchType2=='solo',['assists', 'boosts',
+       'damageDealt', 'DBNOs', 'headshotKills', 'heals', 'killPlace',
+      'kills', 'killStreaks', 'longestKill', 'revives', 'rideDistance', 'roadKills', 'swimDistance',
+       'vehicleDestroys', 'walkDistance', 'weaponsAcquired']]
+X_test_solo['pred'] = gb_solo.predict(X_test_solo)
+X_test_duo = test2.loc[test2.matchType2=='duo',['assists', 'boosts',
+       'damageDealt', 'DBNOs', 'headshotKills', 'heals', 'killPlace',
+      'kills', 'killStreaks', 'longestKill', 'revives', 'rideDistance', 'roadKills', 'swimDistance',
+       'vehicleDestroys', 'walkDistance', 'weaponsAcquired']]
+X_test_duo['pred'] = gb_duo.predict(X_test_duo)
+X_test_squad = test2.loc[test2.matchType2=='squad',['assists', 'boosts',
+       'damageDealt', 'DBNOs', 'headshotKills', 'heals', 'killPlace',
+      'kills', 'killStreaks', 'longestKill', 'revives', 'rideDistance', 'roadKills', 'swimDistance',
+       'vehicleDestroys', 'walkDistance', 'weaponsAcquired']]
+X_test_squad['pred'] = gb_squad.predict(X_test_squad)
+pred = pd.concat([X_test_solo, X_test_duo, X_test_squad], axis=0).sort_index().pred
+sub2 = pd.DataFrame({'Id':test2.Id, 'winPlacePerc':pred})
+sub3 = pd.merge(pd.DataFrame(test.Id), sub2, on='Id', how='outer')
+sub3 = sub3.fillna(0)
+sub3.to_csv('my_sub.csv',encoding='cp949',index=False)
+</code></pre>
+
+### 결과
+
+train set에 대해 약 90% 정도의 성능을 보였다.
+캐글에 제출한 결과 0.07의 Mean Absolute Error를 얻었다.
+컴피티션 참여자 중 1000등의 점수를 기록했다.(총 1500명)
+캐글에서는 타이타닉 다음에 두번째로 한 분석이다. 전에 타이타닉에서는 미들네임을 가지고 결측값의 나이를 유추하는 방법을 찾았는데 이번엔 다 제거하는 방법밖에 생각이 안나서 안타까웠다.
+
+### 한계 및 개선방안
+
+1. 서로간에 상관관계가 높았던 컬럼들이 많아서 강제로 트리기반 모델만을 사용했는데  PCA 처리한 후 모델에 넣어보는 것도 좋을 듯하다. 또는 전체 컬럼들을 RFE나 stepwise로 feature selection을 하는 것도 좋을듯하다.
+
+2. 제거한 행들이 많다. roadkill을 한 차량 미탑승 플레이어, walkdistance가 0임에도 다른 지표가 있는 플레이어. solo, duo, squad 제외 다른 matchType. 이런 행들을 제거한 것 때문에 최종 결과에 널값인 것들을 강제로 fillna(0)처리를 했는데 이런 값들을 제거가 아닌 다른 방법을 생각해봐야 할 듯 하다.
+
+3. 한 팀에 6~7명씩 있는 컬럼은 에러로 판단했지만 다른 방안도 생각해보는 것이 좋을 듯 하다.
+
+4. 교차곱을 활용해 유의미한 변수를 만드는 것도 좋을 듯 하다.
+
+5. 33킬 같은 핵 의심 플레이어들을 솎아낼 만한 방안이 없었다. 이런 값들을 변경할 만한 방안을 생각해봐야 할 듯하다.
+
