@@ -1,4 +1,6 @@
-# MyProject
+# My Project
+> 이세욱
+> dyddl1993@naver.com
 
 ### 1. KAGGLE 타이타닉 생존자 예측 모델
 >2019.06.01 ~ 2019.06.07 개인참가 최종 6000/12000등, Score 78%
